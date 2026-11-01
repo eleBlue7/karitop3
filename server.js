@@ -12,6 +12,13 @@ const PORT = process.env.PORT || 4000;
 app.use(cors({ origin: process.env.ALLOWED_ORIGIN || "*" }));
 app.use(express.json());
 
+// Cookies de YouTube (archivo secreto de Render). Se copian a una carpeta
+// temporal porque /etc/secrets es de solo lectura y yt-dlp intenta escribir en el archivo.
+let cookiesPath = null;
+if (process.env.COOKIES_FILE && fs.existsSync(process.env.COOKIES_FILE)) {
+  cookiesPath = path.join(os.tmpdir(), "cookies.txt");
+  fs.copyFileSync(process.env.COOKIES_FILE, cookiesPath);
+}
 
 const YT_REGEX = /^(https?:\/\/)?(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i;
 
@@ -34,6 +41,7 @@ app.post("/api/youtube-to-mp3", (req, res) => {
     "-o", path.join(dir, "%(title)s.%(ext)s"),
     url,
   ];
+  if (cookiesPath) args.unshift("--cookies", cookiesPath);
 
   const proc = spawn("yt-dlp", args);
   let stderr = "";
@@ -42,7 +50,7 @@ app.post("/api/youtube-to-mp3", (req, res) => {
   proc.on("error", () => {
     fs.rmSync(dir, { recursive: true, force: true });
     if (!res.headersSent) {
-      res.status(500).json({ error: "yt-dlp no está instalado (brew install yt-dlp)" });
+      res.status(500).json({ error: "yt-dlp no está instalado en el servidor" });
     }
   });
 
