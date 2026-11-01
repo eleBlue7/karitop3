@@ -52,6 +52,10 @@ app.post("/api/youtube-to-mp3", (req, res) => {
     "--audio-quality", "0",
     "--embed-thumbnail",
     "--convert-thumbnails", "jpg",
+    "--postprocessor-args",
+    `ThumbnailsConvertor+ffmpeg_o:-vf "crop='min(iw,ih)':'min(iw,ih)',scale=600:600,setsar=1"`,
+
+    "--convert-thumbnails", "jpg",
     "--embed-metadata",
     "--remote-components", "ejs:github",
     "--no-playlist",
