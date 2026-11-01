@@ -4,7 +4,7 @@ const API_URL = import.meta.env.VITE_API_URL || "";
 
 const FRASES = [
   "la vida es un carrusel...",
-  
+
 ];
 
 function saveBlob(blob, filename) {
@@ -53,8 +53,12 @@ export default function App() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Error ${res.status} del servidor`);
+        throw new Error(
+          [data.error, data.detalle].filter(Boolean).join(" — ") ||
+          `Error ${res.status} del servidor 🤖💥`
+        );
       }
+
 
       const filename = getFilename(res.headers.get("Content-Disposition") || "");
       const blob = await res.blob();
@@ -75,7 +79,7 @@ export default function App() {
       <span className="absolute top-1/3 -right-16 h-64 w-64 rounded-full bg-cyan-300/50 blur-3xl animate-pulse" />
       <span className="absolute -bottom-16 left-1/4 h-56 w-56 rounded-full bg-lime-300/50 blur-3xl animate-pulse" />
 
-   
+
 
       <div className="relative w-full max-w-xl">
         <header className="text-center mb-6">

@@ -28,6 +28,7 @@ app.post("/api/youtube-to-mp3", (req, res) => {
   const args = [
     "-x",
     "--audio-format", "mp3",
+    "--remote-components", "ejs:github",
     "--audio-quality", "0",
     "--no-playlist",
     "-o", path.join(dir, "%(title)s.%(ext)s"),
