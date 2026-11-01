@@ -23,11 +23,19 @@ if (process.env.COOKIES_FILE && fs.existsSync(process.env.COOKIES_FILE)) {
 const YT_REGEX = /^(https?:\/\/)?(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i;
 
 app.post("/api/youtube-to-mp3", (req, res) => {
-  const { url } = req.body || {};
+  const { url, nombre } = req.body || {};
 
   if (!url || !YT_REGEX.test(url)) {
     return res.status(400).json({ error: "La URL de YouTube no es válida" });
   }
+
+  // Quita caracteres prohibidos en nombres de archivo (incluidas comillas, para
+  // poder usar el nombre dentro de --postprocessor-args) y escapa el % de yt-dlp
+  const nombreLimpio = (nombre || "")
+    .replace(/[\\/:*?"<>|%]/g, "")
+    .trim()
+    .slice(0, 120);
+  const plantilla = nombreLimpio || "%(title)s";
 
   const dir = path.join(os.tmpdir(), randomUUID());
   fs.mkdirSync(dir, { recursive: true });
@@ -35,12 +43,21 @@ app.post("/api/youtube-to-mp3", (req, res) => {
   const args = [
     "-x",
     "--audio-format", "mp3",
-    "--remote-components", "ejs:github",
     "--audio-quality", "0",
+    "--embed-thumbnail",
+    "--convert-thumbnails", "jpg",
+    "--embed-metadata",
+    "--remote-components", "ejs:github",
     "--no-playlist",
-    "-o", path.join(dir, "%(title)s.%(ext)s"),
-    url,
+    "-o", path.join(dir, `${plantilla}.%(ext)s`),
   ];
+
+  // Si pusieron nombre, también lo guardamos como título dentro del MP3
+  if (nombreLimpio) {
+    args.push("--postprocessor-args", `ffmpeg:-metadata title="${nombreLimpio}"`);
+  }
+
+  args.push(url);
   if (cookiesPath) args.unshift("--cookies", cookiesPath);
 
   const proc = spawn("yt-dlp", args);

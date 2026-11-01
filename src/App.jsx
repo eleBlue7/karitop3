@@ -4,7 +4,6 @@ const API_URL = import.meta.env.VITE_API_URL || "";
 
 const FRASES = [
   "la vida es un carrusel...",
-
 ];
 
 function saveBlob(blob, filename) {
@@ -27,6 +26,7 @@ function getFilename(disposition) {
 
 export default function App() {
   const [url, setUrl] = useState("");
+  const [nombre, setNombre] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -48,23 +48,23 @@ export default function App() {
       const res = await fetch(`${API_URL}/api/youtube-to-mp3`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: url.trim(), nombre: nombre.trim() }),
       });
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
           [data.error, data.detalle].filter(Boolean).join(" — ") ||
-          `Error ${res.status} del servidor 🤖💥`
+            `Error ${res.status} del servidor 🤖💥`
         );
       }
-
 
       const filename = getFilename(res.headers.get("Content-Disposition") || "");
       const blob = await res.blob();
       saveBlob(blob, filename);
       setSuccess("LISTOOOSIIISEXOOO");
       setUrl("");
+      setNombre("");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -78,8 +78,6 @@ export default function App() {
       <span className="absolute -top-10 -left-10 h-48 w-48 rounded-full bg-yellow-300/60 blur-2xl animate-pulse" />
       <span className="absolute top-1/3 -right-16 h-64 w-64 rounded-full bg-cyan-300/50 blur-3xl animate-pulse" />
       <span className="absolute -bottom-16 left-1/4 h-56 w-56 rounded-full bg-lime-300/50 blur-3xl animate-pulse" />
-
-
 
       <div className="relative w-full max-w-xl">
         <header className="text-center mb-6">
@@ -102,6 +100,13 @@ export default function App() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://www.youtube.com/watch?v=..."
+              className="w-full rounded-2xl border-4 border-dashed border-pink-300 bg-pink-50 px-4 py-3 text-fuchsia-900 placeholder-pink-300 focus:border-solid focus:border-cyan-400 focus:bg-white focus:outline-none transition"
+            />
+            <input
+              type="text"
+              value={nombre}
+              onChange={(e) => setNombre(e.target.value)}
+              placeholder="Nombre para la canción (opcional) 🎵"
               className="w-full rounded-2xl border-4 border-dashed border-pink-300 bg-pink-50 px-4 py-3 text-fuchsia-900 placeholder-pink-300 focus:border-solid focus:border-cyan-400 focus:bg-white focus:outline-none transition"
             />
             <button
