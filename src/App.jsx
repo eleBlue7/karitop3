@@ -81,7 +81,8 @@ export default function App() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Algo salió mal");
+        throw new Error(data.error || `Error ${res.status} del servidor`);
+
       }
 
       const filename = getFilename(res.headers.get("Content-Disposition") || "");
