@@ -9,7 +9,13 @@ import path from "path";
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(cors({ origin: process.env.ALLOWED_ORIGIN || "*" }));
+app.use(
+  cors({
+    origin: process.env.ALLOWED_ORIGIN || "*",
+    exposedHeaders: ["Content-Disposition"],
+  })
+);
+
 app.use(express.json());
 
 // Cookies de YouTube (archivo secreto de Render). Se copian a una carpeta

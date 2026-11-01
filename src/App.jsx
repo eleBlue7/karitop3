@@ -55,11 +55,18 @@ export default function App() {
         const data = await res.json().catch(() => ({}));
         throw new Error(
           [data.error, data.detalle].filter(Boolean).join(" — ") ||
-            `Error ${res.status} del servidor 🤖💥`
+          `Error ${res.status} del servidor 🤖💥`
         );
       }
 
-      const filename = getFilename(res.headers.get("Content-Disposition") || "");
+      const nombreElegido = nombre.trim();
+      const filename =
+        getFilename(res.headers.get("Content-Disposition") || "") !== "audio.mp3"
+          ? getFilename(res.headers.get("Content-Disposition") || "")
+          : nombreElegido
+            ? `${nombreElegido}.mp3`
+            : "cancion.mp3";
+
       const blob = await res.blob();
       saveBlob(blob, filename);
       setSuccess("LISTOOOSIIISEXOOO");
