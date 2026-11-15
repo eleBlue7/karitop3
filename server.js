@@ -11,7 +11,8 @@ import path from "node:path";
 import os from "node:os";
 
 const PORT = Number(process.env.PORT || 3001);
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || "*").split(",").map((s) => s.trim());
+
 const COOKIES_BROWSER = process.env.COOKIES_BROWSER || "chrome";
 const COOKIES_FILE = process.env.COOKIES_FILE || "";
 const TTL_MS = 2 * 60 * 60 * 1000; // los archivos viven 2 horas
@@ -22,7 +23,12 @@ const procs = new Map(); // id de tanda -> proceso yt-dlp
 const app = express();
 app.use(express.json({ limit: "10kb" }));
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.includes("*")) res.setHeader("Access-Control-Allow-Origin", "*");
+  else if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
