@@ -289,7 +289,7 @@ body { margin: 0; min-width: 320px; min-height: 100vh; display: block; }
   box-shadow: inset 1px 1px #fff, 5px 6px #51406d30;
 }
 .loading-symbol { display: grid; place-items: center; position: relative; width: 40px; height: 40px; margin: 0 auto 16px; color: #245ec3; }
-.spinner { position: absolute; inset: 0; border: 3px solid #b7cbee; border-top-color: #2261d7; border-radius: 50%; animation: xp-spin 1.3s linear infinite; }
+.spinner { position: relative; flex-shrink: 0; width: 22px; height: 22px; border: 3px solid #b7cbee; border-top-color: #2261d7; border-radius: 50%; animation: xp-spin 1.3s linear infinite; }
 .loading-panel .eyebrow { color: #5a6382; font-size: 9px; font-weight: bold; line-height: 1.6; }
 .loading-panel h3 { margin: 15px 0; color: #183d8d; font-size: clamp(23px, 5vw, 30px); line-height: 1.15; font-weight: bold; }
 .loading-panel > p:not(.eyebrow) { font-size: 12px; line-height: 1.7; color: #4b4b58; }
@@ -322,7 +322,7 @@ body { margin: 0; min-width: 320px; min-height: 100vh; display: block; }
 /* GIF local: public/gifs/ele.gif. Crédito fijo en la esquina derecha. */
 .creator-credit {
   position: fixed;
-  right: 16px;
+  left: 16px;
   bottom: max(12px, env(safe-area-inset-bottom));
   z-index: 20;
   display: flex;
@@ -343,9 +343,14 @@ body { margin: 0; min-width: 320px; min-height: 100vh; display: block; }
 .karito-app { padding-bottom: 112px; }
 @media (max-width: 520px) {
   .karito-app { padding-bottom: 100px !important; }
-  .creator-credit { right: 10px; gap: 7px; font-size: 10px; }
+  .creator-credit { left: 10px; gap: 7px; font-size: 10px; }
   .creator-credit img { width: 48px; height: 48px; }
 }
+.tab-bar { display: flex; gap: 4px; margin: 22px 0 -1px; padding-left: 6px; position: relative; z-index: 1; }
+.tab { min-height: 34px; padding: 7px 16px; color: #3a3943; background: linear-gradient(#fffefa, #e5e3d6); border: 1px solid #919b9c; border-bottom: 0; border-radius: 5px 5px 0 0; font-size: 12px; }
+.tab[aria-pressed="true"] { background: #fcfcf8; border-top: 3px solid #ffc64d; color: #073d8b; font-weight: bold; }
+.workspace.is-hidden { display: none; }
+.song-list-scroll { max-height: 360px; overflow-y: auto; overscroll-behavior: contain; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 @keyframes xp-spin { to { transform: rotate(360deg); } }
 /* Un ciclo desplaza exactamente una baldosa: no hay salto al repetirse. */
@@ -376,4 +381,65 @@ body { margin: 0; min-width: 320px; min-height: 100vh; display: block; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .karito-app *, .karito-app *::before, .karito-app *::after { animation: none !important; transition: none !important; }
+}
+
+/* Ventana XP tipo navegador */
+.xp-window {
+  width: 100%;
+  max-width: 660px;
+  margin: 0 auto;
+  background: #ece9d8;
+  border: 3px solid #0753dc;
+  border-top-color: #2680fb;
+  border-radius: 9px 9px 3px 3px;
+  box-shadow: 6px 9px 0 #51406d30, 0 18px 45px #35205230;
+  overflow: hidden;
+}
+.xp-titlebar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 5px 10px;
+  background: linear-gradient(#4e9bff 0%, #0962e8 12%, #0754df 50%, #0346c9 88%, #3787f7 100%);
+  border-bottom: 1px solid #0038ac;
+  box-shadow: inset 0 1px #9dc7ff;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+.xp-title { color: #fff; font-size: 12px; font-weight: bold; text-shadow: 1px 1px #00378c; }
+.browser-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  padding: 6px 8px 0;
+  background: #d4d0c8;
+  border-bottom: 1px solid #919b9c;
+}
+.browser-tab {
+  min-height: 30px;
+  padding: 5px 14px;
+  color: #3a3943;
+  background: linear-gradient(#fffefa, #e5e3d6);
+  border: 1px solid #919b9c;
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  font-size: 12px;
+}
+.browser-tab[aria-selected="true"] {
+  position: relative;
+  top: 1px;
+  background: #fcfcf8;
+  border-top: 3px solid #ffc64d;
+  color: #073d8b;
+  font-weight: bold;
+}
+.browser-tab:disabled { opacity: .5; cursor: not-allowed; }
+.window-body { padding: 18px 22px 22px; background: #ece9d8; }
+.window-body .results-card { padding: 0; margin-top: 0; border: 0; box-shadow: none; background: none; }
+@media (max-width: 520px) {
+  .window-body { padding: 14px 14px 18px; }
+  .browser-tab { padding: 5px 9px; font-size: 11px; }
 }

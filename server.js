@@ -1,479 +1,224 @@
+// server.js — Backend de Karitop3 para correr en tu Mac
+// Requisitos:  brew install yt-dlp ffmpeg cloudflared
+//              npm i express   (y en package.json: "type": "module")
+// Uso:         COOKIES_BROWSER=chrome ALLOWED_ORIGIN=http://localhost:5173 node server.js
+
 import express from "express";
-import cors from "cors";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
+import fsp from "node:fs/promises";
 import path from "node:path";
-import readline from "node:readline";
+import os from "node:os";
+
+const PORT = Number(process.env.PORT || 3001);
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
+const COOKIES_BROWSER = process.env.COOKIES_BROWSER || "chrome";
+const COOKIES_FILE = process.env.COOKIES_FILE || "";
+const TTL_MS = 2 * 60 * 60 * 1000; // los archivos viven 2 horas
+const ROOT = path.join(os.tmpdir(), "karitop3");
+const jobs = new Map();
+const procs = new Map(); // id de tanda -> proceso yt-dlp
 
 const app = express();
-
-const PORT = process.env.PORT || 4000;
-const FILE_TTL_MS = 60 * 60 * 1000;
-const JOB_TIMEOUT_MS = 45 * 60 * 1000;
-
-// Los trabajos se guardan en memoria.
-// Si Render reinicia el servidor, estos trabajos dejan de estar disponibles.
-const jobs = new Map();
-
-app.use(
-  cors({
-    origin: process.env.ALLOWED_ORIGIN || "*",
-    exposedHeaders: ["Content-Disposition"],
-  })
-);
-
-app.use(express.json({ limit: "8kb" }));
-
-app.get("/", (_req, res) => {
-  res.json({ ok: true, message: "Karitop3 funcionando 🎶" });
+app.use(express.json({ limit: "10kb" }));
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
 });
 
-function removeJob(job) {
-  fs.rmSync(job.dir, { recursive: true, force: true });
-  jobs.delete(job.id);
-}
-
-// Elimina archivos vencidos, pero no mientras se están enviando.
-const cleanupTimer = setInterval(() => {
-  const now = Date.now();
-
-  for (const job of jobs.values()) {
-    if (
-      job.finishedAt &&
-      now - job.finishedAt > FILE_TTL_MS &&
-      job.activeDownloads === 0
-    ) {
-      removeJob(job);
-    }
-  }
-}, 60_000);
-
-cleanupTimer.unref();
-
-function publicJob(job) {
-  return {
-    id: job.id,
-    mode: job.mode,
-    status: job.status,
-    message: job.message,
-    error: job.error,
-    expiresAt: job.finishedAt
-      ? new Date(job.finishedAt + FILE_TTL_MS).toISOString()
-      : null,
-    files: job.files.map(({ id, title, filename, size }) => ({
-      id,
-      title,
-      filename,
-      size,
-      downloadPath: `/api/jobs/${job.id}/files/${id}`,
-    })),
-  };
-}
-
-// Solo acepta enlaces de YouTube y construye una URL canónica.
-// No envía una URL arbitraria al descargador.
-function normalizeYoutubeUrl(value, mode) {
-  if (typeof value !== "string" || value.length > 4096) {
-    throw new Error("Pega un enlace válido de YouTube.");
-  }
-
-  let parsed;
-
+function isYouTube(value) {
   try {
-    parsed = new URL(value.trim());
+    const u = new URL(value);
+    const host = u.hostname.replace(/^(www|m)\./, "");
+    return u.protocol === "https:" && ["youtube.com", "youtu.be", "music.youtube.com"].includes(host);
   } catch {
-    throw new Error("El enlace debe empezar con https://");
+    return false;
   }
-
-  if (
-    !["https:", "http:"].includes(parsed.protocol) ||
-    parsed.username ||
-    parsed.password ||
-    parsed.port
-  ) {
-    throw new Error("El enlace de YouTube no es válido.");
-  }
-
-  const host = parsed.hostname.toLowerCase();
-
-  const allowedHosts = new Set([
-    "youtube.com",
-    "www.youtube.com",
-    "m.youtube.com",
-    "music.youtube.com",
-    "youtu.be",
-  ]);
-
-  if (!allowedHosts.has(host)) {
-    throw new Error("Solo se aceptan enlaces de YouTube.");
-  }
-
-  if (mode === "playlist") {
-    const list = parsed.searchParams.get("list");
-
-    if (!list || !/^[a-zA-Z0-9_-]{2,200}$/.test(list)) {
-      throw new Error(
-        "Ese enlace no incluye una playlist. Copia su enlace completo."
-      );
-    }
-
-    return `https://www.youtube.com/playlist?list=${encodeURIComponent(list)}`;
-  }
-
-  let videoId = parsed.searchParams.get("v");
-
-  if (host === "youtu.be") {
-    videoId = parsed.pathname.split("/").filter(Boolean)[0];
-  } else {
-    const parts = parsed.pathname.split("/").filter(Boolean);
-
-    if (["shorts", "live", "embed"].includes(parts[0])) {
-      videoId = parts[1];
-    }
-  }
-
-  if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
-    throw new Error(
-      "No encontré un video en ese enlace. Prueba copiándolo desde Compartir."
-    );
-  }
-
-  return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
-function startJob(job, youtubeUrl) {
-  let cookiesPath = null;
+function safeName(text) {
+  return (String(text).replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120)) || "cancion";
+}
 
+function runYtDlp(args, cwd, jobId) {
+  return new Promise((resolve) => {
+    const p = spawn("yt-dlp", args, { cwd, detached: true });
+    procs.set(jobId, p);
+    let err = "";
+    p.stdout.on("data", () => {});
+    p.stderr.on("data", (d) => { err = (err + d).slice(-8000); });
+    p.on("error", (e) => { procs.delete(jobId); resolve({ code: -1, err: e.message }); });
+    p.on("close", (code) => { procs.delete(jobId); resolve({ code, err }); });
+  });
+}
+
+async function listFiles(job, dir) {
+  const titles = new Map();
   try {
-    // Cada trabajo recibe su propia copia para evitar que dos procesos
-    // escriban en el mismo archivo de cookies.
-    if (process.env.COOKIES_FILE) {
-      if (!fs.existsSync(process.env.COOKIES_FILE)) {
-        throw new Error(
-          "COOKIES_FILE está configurada, pero el archivo no existe."
-        );
-      }
-
-      cookiesPath = path.join(job.dir, "cookies.txt");
-
-      fs.copyFileSync(process.env.COOKIES_FILE, cookiesPath);
-      fs.chmodSync(cookiesPath, 0o600);
+    const meta = await fsp.readFile(path.join(dir, "meta.txt"), "utf8");
+    for (const line of meta.split("\n")) {
+      const [id, ...rest] = line.split("\t");
+      if (id && rest.length) titles.set(id.trim(), rest.join("\t").trim());
     }
-  } catch (error) {
-    console.error("No se pudieron preparar las cookies:", error.message);
+  } catch { /* sin metadatos, usamos el id */ }
 
-    job.status = "failed";
-    job.error =
-      "El servidor no pudo leer el archivo de cookies. Revisa COOKIES_FILE.";
-    job.finishedAt = Date.now();
-    return;
+  const names = (await fsp.readdir(dir)).filter((n) => n.endsWith(".mp3"));
+  const out = [];
+  for (const diskName of names) {
+    const id = diskName.slice(0, -4);
+    const stat = await fsp.stat(path.join(dir, diskName));
+    const title = titles.get(id) || id;
+    if (!job.ids.has(diskName)) job.ids.set(diskName, randomUUID());
+    const fileId = job.ids.get(diskName);
+    out.push({
+      id: fileId,
+      diskName,
+      title,
+      filename: `${safeName(title)}.mp3`,
+      size: stat.size,
+      downloadPath: `/api/jobs/${job.id}/files/${fileId}`,
+    });
   }
+  return out;
+}
 
-  const outputTemplate =
-    job.mode === "playlist"
-      ? "%(playlist_index)03d - %(title).150B.%(ext)s"
-      : "%(title).150B.%(ext)s";
+async function processJob(job, url, mode) {
+  const dir = path.join(ROOT, job.id);
+  await fsp.mkdir(dir, { recursive: true });
+
+  const cookieArgs = COOKIES_FILE
+    ? ["--cookies", COOKIES_FILE]
+    : ["--cookies-from-browser", COOKIES_BROWSER];
 
   const args = [
-    "--ignore-config",
-    "--no-progress",
-    "--no-colors",
-
-    "-f",
-    "bestaudio/best",
-
-    "-x",
-    "--audio-format",
-    "mp3",
-    "--audio-quality",
-    "0",
-
+    ...cookieArgs,
+    mode === "playlist" ? "--yes-playlist" : "--no-playlist",
+    "-x", "--audio-format", "mp3", "--audio-quality", "0",
     "--embed-metadata",
-    "--embed-thumbnail",
-    "--convert-thumbnails",
-    "jpg",
-
-    // Recorte centrado y carátula cuadrada.
-    "--postprocessor-args",
-    `ThumbnailsConvertor+ffmpeg_o:-vf "crop='min(iw,ih)':'min(iw,ih)',scale=600:600,setsar=1"`,
-
-    "--remote-components",
-    "ejs:github",
-
-    "--socket-timeout",
-    "30",
-    "--retries",
-    "3",
-    "--fragment-retries",
-    "3",
-
-    "-o",
-    path.join(job.dir, outputTemplate),
-
-    // Solo anuncia el archivo después de terminar los postprocesadores.
-    "--print",
-    "after_move:__KARITOP3__%(filepath)j",
+    "--embed-thumbnail", "--convert-thumbnails", "jpg",
+    "--ppa", "ThumbnailsConvertor+ffmpeg_o:-vf crop=ih:ih,scale=600:600",
+    "--ignore-errors",
+    "--no-overwrites",
+    "--print-to-file", "%(id)s\t%(title)s", "meta.txt",
+    "-o", "%(id)s.%(ext)s",
+    "--", url,
   ];
 
-  if (job.mode === "playlist") {
-    args.push("--yes-playlist", "--ignore-errors");
+  // Publica las canciones terminadas mientras yt-dlp sigue (tamaño estable entre revisiones).
+  const sizes = new Map();
+  const refresh = async (onlyStable) => {
+    const found = await listFiles(job, dir);
+    job.files = onlyStable
+      ? found.filter((f) => {
+          const stable = sizes.get(f.diskName) === f.size && f.size > 0;
+          sizes.set(f.diskName, f.size);
+          return stable;
+        })
+      : found;
+  };
+  let scanning = false;
+  const timer = setInterval(async () => {
+    if (scanning) return;
+    scanning = true;
+    try { await refresh(true); } catch { /* reintenta luego */ }
+    finally { scanning = false; }
+  }, 3000);
+
+  const { err } = await runYtDlp(args, dir, job.id);
+  clearInterval(timer);
+  if (job.cancelled) {
+    // Cancelada: se conserva lo ya convertido.
+    job.status = "cancelled";
+  }
+  await refresh(false);
+
+  if (job.cancelled) {
+    job.status = "cancelled";
+  } else if (job.files.length) {
+    job.status = "done";
   } else {
-    args.push("--no-playlist");
+    job.status = "error";
+    job.error = /sign in|confirm you|cookies|authentication/i.test(err)
+      ? "YouTube pidió verificación. Revisa que el navegador de la Mac tenga sesión iniciada en YouTube."
+      : "No pude convertir ese enlace. Revisa que sea público y vuelve a intentarlo.";
   }
-
-  if (cookiesPath) {
-    args.push("--cookies", cookiesPath);
-  }
-
-  args.push("--", youtubeUrl);
-
-  job.status = "processing";
-  job.message = "Preparando la música...";
-
-  const proc = spawn("yt-dlp", args, {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  let stderr = "";
-  let processError = false;
-  let timedOut = false;
-  let settled = false;
-  let killTimer = null;
-
-  // Evita que el proceso quede trabajando indefinidamente.
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    proc.kill("SIGTERM");
-
-    killTimer = setTimeout(() => {
-      proc.kill("SIGKILL");
-    }, 5000);
-
-    killTimer.unref();
-  }, JOB_TIMEOUT_MS);
-
-  timeout.unref();
-
-  const output = readline.createInterface({
-    input: proc.stdout,
-    crlfDelay: Infinity,
-  });
-
-  output.on("line", (line) => {
-    const marker = "__KARITOP3__";
-    const position = line.indexOf(marker);
-
-    if (position === -1) return;
-
-    try {
-      const filePath = JSON.parse(
-        line.slice(position + marker.length).trim()
-      );
-
-      if (typeof filePath !== "string") return;
-
-      const absolutePath = path.resolve(filePath);
-
-      // Solo publica MP3 que estén dentro de la carpeta de este trabajo.
-      if (
-        path.dirname(absolutePath) !== path.resolve(job.dir) ||
-        path.extname(absolutePath).toLowerCase() !== ".mp3" ||
-        !fs.existsSync(absolutePath)
-      ) {
-        return;
-      }
-
-      if (job.files.some((file) => file.path === absolutePath)) {
-        return;
-      }
-
-      const filename = path.basename(absolutePath);
-      const stats = fs.statSync(absolutePath);
-
-      job.files.push({
-        id: randomUUID(),
-        path: absolutePath,
-        filename,
-        title: filename.replace(/\.mp3$/i, ""),
-        size: stats.size,
-      });
-
-      job.message = `${job.files.length} canción(es) lista(s).`;
-    } catch {
-      // Ignora líneas de salida que no sean un archivo anunciado válido.
-    }
-  });
-
-  proc.stderr.on("data", (chunk) => {
-    // Guarda un fragmento limitado para el diagnóstico del servidor.
-    stderr = (stderr + chunk.toString()).slice(-12_000);
-  });
-
-  proc.on("error", (error) => {
-    processError = true;
-    console.error("No se pudo iniciar yt-dlp:", error.message);
-  });
-
-  proc.on("close", (code) => {
-    if (settled) return;
-    settled = true;
-
-    clearTimeout(timeout);
-    if (killTimer) clearTimeout(killTimer);
-    output.close();
-
-    // Ya no necesitamos la copia local de las cookies.
-    if (cookiesPath) {
-      fs.rmSync(cookiesPath, { force: true });
-    }
-
-    job.finishedAt = Date.now();
-
-    if (processError) {
-      job.status = "failed";
-      job.error =
-        "No se pudo iniciar yt-dlp. Revisa su instalación en el servidor.";
-    } else if (timedOut) {
-      job.status = job.files.length ? "partial" : "failed";
-      job.error =
-        "Se alcanzó el tiempo máximo de procesamiento. Puedes descargar las canciones que sí quedaron listas.";
-    } else if (code !== 0 || /(^|\n)ERROR:/m.test(stderr)) {
-      job.status = job.files.length ? "partial" : "failed";
-      job.error = job.files.length
-        ? "Algunas canciones fallaron o no están disponibles. Las demás sí se pueden descargar."
-        : "No se pudo convertir. Puede ser un bloqueo de YouTube, una sesión vencida o un video no disponible.";
-    } else if (job.files.length === 0) {
-      job.status = "failed";
-      job.error = "No se encontraron canciones disponibles para descargar.";
-    } else {
-      job.status = "completed";
-      job.message = "¡Tu música está lista!";
-    }
-
-    if (job.status !== "completed" && stderr) {
-      console.error(`[Trabajo ${job.id}]\n${stderr}`);
-    }
-  });
+  job.expiresAt = Date.now() + TTL_MS;
 }
 
-// Crea un trabajo y responde inmediatamente con su identificador.
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
 app.post("/api/jobs", (req, res) => {
-  const { url, mode = "single" } = req.body || {};
-
-  if (!["single", "playlist"].includes(mode)) {
-    return res.status(400).json({ error: "Modo no válido." });
+  const url = String(req.body?.url || "").trim();
+  const mode = req.body?.mode === "playlist" ? "playlist" : "single";
+  if (!isYouTube(url)) {
+    return res.status(400).json({ error: "Pega un enlace válido de YouTube (https://www.youtube.com/...)." });
+  }
+  if (mode === "playlist" && !/[?&]list=/.test(url)) {
+    return res.status(400).json({ error: "Ese enlace no parece ser de una playlist (falta list=)." });
   }
 
-  let youtubeUrl;
-
-  try {
-    youtubeUrl = normalizeYoutubeUrl(url, mode);
-  } catch (error) {
-    return res.status(400).json({ error: error.message });
-  }
-
-  // Una tanda a la vez para no saturar el servidor.
-  const busy = [...jobs.values()].some(
-    (job) => job.status === "processing"
-  );
-
-  if (busy) {
-    return res.status(429).json({
-      error:
-        "El servidor ya está preparando otra tanda. Espera a que termine e inténtalo de nuevo.",
-    });
-  }
-
-  const id = randomUUID();
-  const dir = path.join(os.tmpdir(), `karitop3-${id}`);
-
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch {
-    return res.status(500).json({
-      error: "No se pudo crear la carpeta temporal.",
-    });
-  }
-
-  const job = {
-    id,
-    dir,
-    mode,
-    status: "processing",
-    message: "Iniciando...",
-    error: "",
-    files: [],
-    finishedAt: null,
-    activeDownloads: 0,
-  };
-
-  jobs.set(id, job);
-  startJob(job, youtubeUrl);
-
+  const job = { id: randomUUID(), status: "processing", cancelled: false, files: [], ids: new Map(), error: "", expiresAt: null };
+  jobs.set(job.id, job);
+  processJob(job, url, mode).catch((e) => {
+    job.status = "error";
+    job.error = e.message;
+  });
   res.status(202).json(publicJob(job));
 });
 
-// Consulta el progreso y la lista de canciones disponibles.
-app.get("/api/jobs/:jobId", (req, res) => {
-  const job = jobs.get(req.params.jobId);
-
-  if (!job) {
-    return res.status(404).json({
-      error:
-        "Esta tanda ya no está disponible. Puede haber vencido o el servidor se reinició.",
-    });
+// Cancela la tanda: detiene yt-dlp y conserva las canciones ya listas.
+app.post("/api/jobs/:id/cancel", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Esta tanda ya no existe." });
+  if (job.status === "processing") {
+    job.cancelled = true;
+    job.status = "cancelled";
+    const p = procs.get(job.id);
+    if (p?.pid) {
+      // Mata el grupo completo (yt-dlp + ffmpeg).
+      try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill("SIGKILL"); } catch { /* ya terminó */ } }
+    }
+    procs.delete(job.id);
   }
-
-  res.setHeader("Cache-Control", "no-store");
   res.json(publicJob(job));
 });
 
-// Descarga un MP3 concreto.
-app.get("/api/jobs/:jobId/files/:fileId", (req, res) => {
-  const job = jobs.get(req.params.jobId);
+function publicJob(job) {
+  const { ids, cancelled, ...rest } = job;
+  return rest;
+}
 
-  if (!job) {
-    return res.status(404).json({
-      error: "La tanda venció o el servidor se reinició.",
-    });
-  }
+app.get("/api/jobs/:id", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Esta tanda ya no existe. Vuelve a enviar el enlace." });
+  res.json(publicJob(job));
+});
 
-  const file = job.files.find(
-    (item) => item.id === req.params.fileId
-  );
-
-  if (!file || !fs.existsSync(file.path)) {
-    return res.status(404).json({
-      error: "El archivo ya no está disponible.",
-    });
-  }
-
-  job.activeDownloads += 1;
-
-  let released = false;
-
-  const release = () => {
-    if (released) return;
-    released = true;
-    job.activeDownloads -= 1;
-  };
-
-  res.once("close", release);
-  res.setHeader("Cache-Control", "no-store");
-
-  res.download(file.path, file.filename, (error) => {
-    release();
-
-    if (error && !res.headersSent && !res.destroyed) {
-      res.status(500).json({
-        error: "No se pudo enviar el archivo.",
-      });
-    }
+app.get("/api/jobs/:id/files/:fileId", (req, res) => {
+  const job = jobs.get(req.params.id);
+  const file = job?.files.find((f) => f.id === req.params.fileId);
+  if (!file) return res.status(404).json({ error: "Archivo no encontrado. Puede que ya haya expirado." });
+  res.download(path.join(ROOT, job.id, file.diskName), file.filename, (err) => {
+    if (err && !res.headersSent) res.status(500).json({ error: "No pude leer el archivo." });
   });
 });
 
+// Limpieza: borra tandas vencidas cada 10 minutos
+setInterval(async () => {
+  const now = Date.now();
+  for (const [id, job] of jobs) {
+    if (job.expiresAt && job.expiresAt < now) {
+      jobs.delete(id);
+      await fsp.rm(path.join(ROOT, id), { recursive: true, force: true });
+    }
+  }
+}, 10 * 60 * 1000).unref();
+
 app.listen(PORT, () => {
-  console.log(`Servidor en http://localhost:${PORT}`);
+  console.log(`Karitop3 backend en http://localhost:${PORT}`);
+  console.log(`Cookies desde: ${COOKIES_FILE || COOKIES_BROWSER}`);
 });

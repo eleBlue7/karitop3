@@ -9,7 +9,6 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "server": "node server.js"
-
   },
   "dependencies": {
     "cors": "^2.8.6",
