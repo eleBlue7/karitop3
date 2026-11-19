@@ -31,7 +31,7 @@ export default function DraggableWindow({ title, tabs, activeTab, onTab, childre
         onPointerCancel={onPointerUp}
       >
         <span className="xp-title">{title}</span>
-        <span className="small-seal" aria-hidden="true">樂</span>
+        <span className="small-seal" aria-hidden="true">X</span>
       </div>
 
       {tabs && (

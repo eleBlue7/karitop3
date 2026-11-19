@@ -55,7 +55,7 @@ function runYtDlp(args, cwd, jobId) {
     const p = spawn("yt-dlp", args, { cwd, detached: true });
     procs.set(jobId, p);
     let err = "";
-    p.stdout.on("data", () => {});
+    p.stdout.on("data", () => { });
     p.stderr.on("data", (d) => { err = (err + d).slice(-8000); });
     p.on("error", (e) => { procs.delete(jobId); resolve({ code: -1, err: e.message }); });
     p.on("close", (code) => { procs.delete(jobId); resolve({ code, err }); });
@@ -63,12 +63,26 @@ function runYtDlp(args, cwd, jobId) {
 }
 
 async function listFiles(job, dir) {
-  const titles = new Map();
+  const meta = new Map();
   try {
-    const meta = await fsp.readFile(path.join(dir, "meta.txt"), "utf8");
-    for (const line of meta.split("\n")) {
-      const [id, ...rest] = line.split("\t");
-      if (id && rest.length) titles.set(id.trim(), rest.join("\t").trim());
+    const text = await fsp.readFile(path.join(dir, "meta.txt"), "utf8");
+    for (const line of text.split("\n")) {
+      const [id, playlistIdx, trackNum, discNum, ...rest] = line.split("\t");
+      if (!id || !rest.length) continue;
+      const rawTitle = rest.join("\t").trim();
+      // Respaldo: título tipo "12. carta a mi papá"
+      const lead = rawTitle.match(/^(\d{1,3})[.\-–)]\s+(.*)$/);
+      const track = Number(trackNum);
+      const index = Number(playlistIdx);
+      const disc = Number(discNum) || 1;
+      meta.set(id.trim(), {
+        title: lead ? lead[2].trim() : rawTitle,
+        disc,
+        track: track > 0 ? track
+          : lead ? Number(lead[1])
+          : index > 0 ? index
+          : Number.MAX_SAFE_INTEGER,
+      });
     }
   } catch { /* sin metadatos, usamos el id */ }
 
@@ -77,20 +91,27 @@ async function listFiles(job, dir) {
   for (const diskName of names) {
     const id = diskName.slice(0, -4);
     const stat = await fsp.stat(path.join(dir, diskName));
-    const title = titles.get(id) || id;
+    const info = meta.get(id);
+    const title = info?.title || id;
     if (!job.ids.has(diskName)) job.ids.set(diskName, randomUUID());
     const fileId = job.ids.get(diskName);
     out.push({
       id: fileId,
       diskName,
       title,
+      disc: info?.disc ?? 1,
+      position: info?.track ?? Number.MAX_SAFE_INTEGER,
       filename: `${safeName(title)}.mp3`,
       size: stat.size,
       downloadPath: `/api/jobs/${job.id}/files/${fileId}`,
     });
   }
+
+  // Igual que en el álbum: primero disco, luego pista; si empatan, por título.
+  out.sort((a, b) => a.disc - b.disc || a.position - b.position || a.title.localeCompare(b.title));
   return out;
 }
+
 
 async function processJob(job, url, mode) {
   const dir = path.join(ROOT, job.id);
@@ -109,7 +130,7 @@ async function processJob(job, url, mode) {
     "--ppa", "ThumbnailsConvertor+ffmpeg_o:-vf crop=ih:ih,scale=600:600",
     "--ignore-errors",
     "--no-overwrites",
-    "--print-to-file", "%(id)s\t%(title)s", "meta.txt",
+    "--print-to-file", "%(id)s\t%(playlist_index|0)s\t%(track_number|0)s\t%(disc_number|1)s\t%(title)s", "meta.txt",
     "-o", "%(id)s.%(ext)s",
     "--", url,
   ];
@@ -120,10 +141,10 @@ async function processJob(job, url, mode) {
     const found = await listFiles(job, dir);
     job.files = onlyStable
       ? found.filter((f) => {
-          const stable = sizes.get(f.diskName) === f.size && f.size > 0;
-          sizes.set(f.diskName, f.size);
-          return stable;
-        })
+        const stable = sizes.get(f.diskName) === f.size && f.size > 0;
+        sizes.set(f.diskName, f.size);
+        return stable;
+      })
       : found;
   };
   let scanning = false;

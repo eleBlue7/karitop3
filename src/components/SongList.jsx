@@ -25,7 +25,10 @@ export default function SongList({
       <ul className="song-list song-list-scroll">
         {files.map((file, i) => (
           <li key={file.id}>
-            <span className="track-number">{String(i + 1).padStart(2, "0")}</span>
+            <span className="track-number">
+  {file.position !== Number.MAX_SAFE_INTEGER ? String(file.position).padStart(2, "0") : "--"}
+</span>
+
             <div className="track-art" aria-hidden="true"><Icon name="note" /></div>
             <div className="track-info">
               <h3>{file.title}</h3>
